@@ -1,3 +1,4 @@
+// kompilowanie: nvcc -o executable p1.cu
 
 #include <stdio.h>
 #include <time.h>
