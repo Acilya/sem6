@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+#include <string.h>
 
 typedef struct
 {
@@ -26,26 +27,50 @@ void checkCUDAError(const char *msg)
 	 }
 }
 
-void MatMulCPU(const Matrix A, const Matrix B, Matrix C)
+void MatMulCPU(Matrix A, Matrix B)
 {
+	Matrix D;
+	D.width = B.width;
+	D.height = A.height;
+	D.elements = (float*)malloc(D.height * D.width * sizeof(float));
+		
+	cpu_startTime = clock();
+	
 	// M(row, col) = *(M.elements + row * M.width + col)
 	int i, j, k;
 	for (i = 0; i < A.height; i++)
 	{
 		for (j = 0; j < B.width; j++)
 		{
-			*(C.elements + i * C.width + j) = 0;
+			*(D.elements + i * D.width + j) = 0;
 			for (k = 0; k < A.width; k++)
 			{
-				*(C.elements + i * C.width + j) += 
+				*(D.elements + i * D.width + j) += 
 				(*(A.elements + i * A.width + k)) * (*(B.elements + k * B.width + j));
 			}
 		}
 	}
+	
+	cpu_endTime = clock();
+	cpu_elapseTime = ((cpu_endTime - cpu_startTime)/(double)CLOCKS_PER_SEC);
+	for (i = 0; i < 10; i++)
+	{
+		printf("%f ", D.elements[i]);
+	}
+	printf("\nCPU time: %f ms\n", cpu_elapseTime);
+	
+	free(D.elements);
 }
 
 void MatMulGPU(Matrix A, Matrix B, Matrix C)
 {
+	int i = 0;
+	for (i = 0; i < A.height * A.width; i++)
+	{
+		A.elements[i] = (float)rand()/(float)(RAND_MAX);
+		B.elements[i] = (float)rand()/(float)(RAND_MAX);
+	}
+	
 	Matrix d_A;
 	d_A.width  = A.width;
 	d_A.height = A.height;
@@ -66,12 +91,6 @@ void MatMulGPU(Matrix A, Matrix B, Matrix C)
 	size = C.width * C.height * sizeof(float);
 	cudaMalloc((void **)&d_C.elements, size);
 	
-	for (i = 0; i < A.height * A.width; i++)
-	{
-		A.elements[i] = (float)rand()/(float)(RAND_MAX);
-		B.elements[i] = (float)rand()/(float)(RAND_MAX);
-	}
-	
 	gpu_startTime = clock();
 
 	dim3 dimBlock(BLOCK_SIZE, BLOCK_SIZE);
@@ -83,18 +102,20 @@ void MatMulGPU(Matrix A, Matrix B, Matrix C)
 
 	cudaMemcpy(C.elements, d_C.elements, size, cudaMemcpyDeviceToHost);
 	
+	cudaFree(d_A.elements);
+	cudaFree(d_B.elements);
+	cudaFree(d_C.elements);
+	
 	for (i = 0; i < 10; i++)
 	{
 		printf("%f ", C.elements[i]);
 	}
 	printf("\nGPU time: %f ms\n", gpu_elapseTime);
-
-	cudaFree(d_A.elements);
-	cudaFree(d_B.elements);
-	cudaFree(d_C.elements);
+	
+	MatMulCPU(A, B);
 }
 
-int mapSupport()
+int checkMapSupport()
 {
 	int result = 1;
 	cudaDeviceProp deviceProp;
@@ -112,7 +133,7 @@ int mapSupport()
 
 void MatMulGPUMap(Matrix A, Matrix B, Matrix C)
 {
-	if (!mapSupport()) 
+	if (!checkMapSupport()) 
 		printf("This device does not support memory mapping!\n");
 	
 	Matrix d_A, d_B, d_C;
@@ -169,10 +190,8 @@ void MatMulGPUMap(Matrix A, Matrix B, Matrix C)
 		printf("%f ", C.elements[i]);
 	}
 	printf("\nGPU time: %f ms\n", gpu_elapseTime);
-
-	cudaFreeHost(A.elements);
-	cudaFreeHost(B.elements);
-	cudaFreeHost(C.elements);
+	
+	MatMulCPU(A, B);
 }
 
 __global__ void MatMulKernel(Matrix A, Matrix B, Matrix C)
@@ -181,68 +200,55 @@ __global__ void MatMulKernel(Matrix A, Matrix B, Matrix C)
 	int row = blockIdx.y * blockDim.y + threadIdx.y;
 	int col = blockIdx.x * blockDim.x + threadIdx.x;
 	for (int e = 0; e < A.width; ++e)
+	{
 		Cvalue += A.elements[row * A.width + e] * B.elements[e * B.width + col];
+	}
 	C.elements[row * C.width + col] = Cvalue;
 }
 
 int main(int argc, char** argv)
 {
 	if (argc != 2)
-		printf("Not enough or too much arguments!");
-	
-	srand((unsigned int)time(NULL));
-	int i = 0;
-	
-	Matrix A;
-	A.width = 1600;
-	A.height = 1600;
-	A.elements = (float*)malloc(A.width * A.height * sizeof(float));
-	
-	Matrix B;
-	B.width = 1600;
-	B.height = 1600;
-	B.elements = (float*)malloc(B.width * B.height * sizeof(float));
-	
-	Matrix C;
-	C.width = B.width;
-	C.height = A.height;
-	C.elements = (float*)malloc(C.height * C.width * sizeof(float));
-	
-	Matrix D;
-	D.width = B.width;
-	D.height = A.height;
-	D.elements = (float*)malloc(D.height * D.width * sizeof(float));
-	
-	//GPU:
-	if (argv[1] == "--copy")
-		MatMulGPU(A, B, D);
-	else if (argv[1] == "--map")
-		MatMulGPUMap(A, B, D);
-	else if (argv[1] == "--auto")
 	{
-		if(mapSupport())
-			MatMulGPUMap(A, B, D);
-		else
-			MatMulGPU(A, B, D);
+		printf("Not enough or too much arguments!\n");
 	}
 	else
-		printf("Invalid argument!");
-	
-	//CPU:
-	cpu_startTime = clock();
-	MatMulCPU(A, B, C);
-	cpu_endTime = clock();
-	cpu_elapseTime = ((cpu_endTime - cpu_startTime)/(double)CLOCKS_PER_SEC);
-	for (i = 0; i < 10; i++)
 	{
-		printf("%f ", C.elements[i]);
+		srand((unsigned int)time(NULL));
+
+		Matrix A;
+		A.width = 16;
+		A.height = 16;
+		A.elements = (float*)malloc(A.width * A.height * sizeof(float));
+
+		Matrix B;
+		B.width = 16;
+		B.height = 16;
+		B.elements = (float*)malloc(B.width * B.height * sizeof(float));
+
+		Matrix C;
+		C.width = B.width;
+		C.height = A.height;
+		C.elements = (float*)malloc(C.height * C.width * sizeof(float));
+
+		//GPU:
+		if (strcmp(argv[1], "--copy") == 0)
+			MatMulGPU(A, B, C);
+		else if (strcmp(argv[1], "--map") == 0)
+			MatMulGPUMap(A, B, C);
+		else if (strcmp(argv[1], "--auto") == 0)
+		{
+			if(checkMapSupport())
+				MatMulGPUMap(A, B, C);
+			else
+				MatMulGPU(A, B, C);
+		}
+		else
+			printf("Invalid argument!");
+
+		free(A.elements);
+		free(B.elements);
+		free(C.elements);
 	}
-	printf("\nCPU time: %f ms\n", cpu_elapseTime);
-	
-	free(A.elements);
-	free(B.elements);
-	free(C.elements);
-	free(D.elements);
-	
 	return 0;
 }
